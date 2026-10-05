@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scientific Calculator</title>
+<style>
+  :root {
+    --body: #dde2e5;
+    --screen: #1f272c;
+    --screen-text: #d3ecdd;
+    --screen-dim: #7f968a;
+    --key-num: #f6f7f8;
+    --key-fn: #c4ccd2;
+    --key-op: #3a444c;
+    --key-eq: #e0552b;
+    --ink: #1b2227;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+    --sans: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    min-height: 100vh; display: grid; place-items: center; padding: 16px;
+    background: #aeb6bc; font-family: var(--sans); color: var(--ink);
+  }
+  .calc {
+    width: 100%; max-width: 420px; padding: 18px; border-radius: 18px;
+    background: var(--body); box-shadow: 0 18px 40px rgba(20, 28, 33, .35);
+  }
+  .screen { background: var(--screen); border-radius: 10px; padding: 12px 16px 14px; }
+  .bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .mode {
+    font: 600 12px var(--mono); color: var(--screen-text); background: transparent;
+    border: 1px solid var(--screen-dim); border-radius: 6px; padding: 3px 9px; cursor: pointer;
+  }
+  .ans-tag { font: 12px var(--mono); color: var(--screen-dim); }
+  #input {
+    width: 100%; border: 0; outline: 0; background: transparent; text-align: right;
+    font: 22px var(--mono); color: var(--screen-text); caret-color: var(--key-eq);
+  }
+  #result {
+    min-height: 40px; text-align: right; font: 600 32px/40px var(--mono);
+    color: var(--screen-text); overflow-x: auto; white-space: nowrap;
+  }
+  #result.error { color: #ff9b7c; font-size: 16px; }
+  #result.preview { color: var(--screen-dim); }
+  .keys { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 16px; }
+  button.key {
+    height: 46px; border: 0; border-radius: 9px; cursor: pointer;
+    font: 500 15px var(--sans); color: var(--ink); background: var(--key-fn);
+    box-shadow: 0 2px 0 rgba(0, 0, 0, .22); transition: transform .06s, box-shadow .06s;
+  }
+  button.key:active { transform: translateY(2px); box-shadow: none; }
+  button.key:focus-visible, .mode:focus-visible { outline: 2px solid var(--key-eq); outline-offset: 2px; }
+  .num { background: var(--key-num); font-size: 18px; }
+  .op  { background: var(--key-op); color: #fff; font-size: 18px; }
+  .eq  { background: var(--key-eq); color: #fff; font-size: 20px; }
+  .history { margin-top: 14px; font: 13px var(--mono); }
+  .history button {
+    display: flex; width: 100%; justify-content: space-between; gap: 12px; padding: 6px 4px;
+    background: none; border: 0; border-top: 1px solid rgba(0, 0, 0, .12);
+    font: inherit; color: var(--ink); cursor: pointer; text-align: left;
+  }
+  .history button:hover { background: rgba(255, 255, 255, .5); }
+  @media (max-width: 380px) { button.key { height: 42px; font-size: 13px; } }
+</style>
+</head>
+<body>
+<main class="calc">
+  <section class="screen">
+    <div class="bar">
+      <button class="mode" id="mode" title="Switch angle unit">DEG</button>
+      <span class="ans-tag" id="ansTag">Ans = 0</span>
+    </div>
+    <input id="input" type="text" inputmode="none" autocomplete="off" spellcheck="false" aria-label="Expression" autofocus>
+    <div id="result" aria-live="polite"></div>
+  </section>
+  <section class="keys" id="keys"></section>
+  <section class="history" id="history" aria-label="History"></section>
+</main>
+
+<script>
+'use strict';
+
+/* ---------- State ---------- */
+let degrees = true;   // angle mode
+let ans = 0;          // last result
+const history = [];
+
+/* ---------- Math helpers ---------- */
+const toRad = x => (degrees ? x * Math.PI / 180 : x);
+const fromRad = x => (degrees ? x * 180 / Math.PI : x);
+
+// O(n): multiply 2..n. Capped at 170 because 171! overflows a double.
+function factorial(n) {
+  if (!Number.isInteger(n) || n < 0) throw new Error('n! needs an integer ≥ 0');
+  if (n > 170) throw new Error('Result too large');
+  let r = 1;
+  for (let i = 2; i <= n; i++) r *= i;
+  return r;
+}
+
+// O(√n): only odd divisors of the form 6k±1 up to √n are tested.
+function isPrime(n) {
+  if (!Number.isInteger(n) || n < 2) return 0;
+  if (n < 4) return 1;                       // 2 and 3
+  if (n % 2 === 0 || n % 3 === 0) return 0;  // removes 2/3 of all numbers at once
+  for (let i = 5; i * i <= n; i += 6) {
+    if (n % i === 0 || n % (i + 2) === 0) return 0;
+  }
+  return 1;
+}
+
+// Euclid: O(log min(a, b))
+function gcd(a, b) {
+  if (!Number.isInteger(a) || !Number.isInteger(b)) throw new Error('gcd needs integers');
+  a = Math.abs(a); b = Math.abs(b);
+  while (b) [a, b] = [b, a % b];
+  return a;
+}
+
+function lcm(a, b) {
+  if (a === 0 || b === 0) return 0;
+  return Math.abs(a / gcd(a, b) * b);
+}
+
+// O(min(r, n-r)): uses symmetry C(n,r) = C(n,n-r) and stays in integers at every step.
+function nCr(n, r) {
+  if (!Number.isInteger(n) || !Number.isInteger(r) || n < 0 || r < 0 || r > n) throw new Error('Invalid nCr input');
+  r = Math.min(r, n - r);
+  let result = 1;
+  for (let i = 1; i <= r; i++) result = result * (n - r + i) / i;
+  return Math.round(result);
+}
+
+// O(r)
+function nPr(n, r) {
+  if (!Number.isInteger(n) || !Number.isInteger(r) || n < 0 || r < 0 || r > n) throw new Error('Invalid nPr input');
+  let result = 1;
+  for (let i = 0; i < r; i++) result *= n - i;
+  return result;
+}
+
+function needRange(x, min, max) {
+  if (x < min || x > max) throw new Error('Domain error');
+  return x;
+}
+
+/* ---------- Function table (name -> implementation) ---------- */
+const FUNCS = {
+  sin:  x => Math.sin(toRad(x)),
+  cos:  x => Math.cos(toRad(x)),
+  tan:  x => {
+    if (degrees ? x % 180 === 90 || x % 180 === -90 : false) throw new Error('tan is undefined here');
+    return Math.tan(toRad(x));
+  },
+  asin: x => fromRad(Math.asin(needRange(x, -1, 1))),
+  acos: x => fromRad(Math.acos(needRange(x, -1, 1))),
+  atan: x => fromRad(Math.atan(x)),
+  log:  x => { if (x <= 0) throw new Error('log needs x > 0'); return Math.log10(x); },
+  ln:   x => { if (x <= 0) throw new Error('ln needs x > 0'); return Math.log(x); },
+  sqrt: x => { if (x < 0) throw new Error('√ needs x ≥ 0'); return Math.sqrt(x); },
+  cbrt: x => Math.cbrt(x),
+  abs:  x => Math.abs(x),
+  exp:  x => Math.exp(x),
+  isprime: isPrime,
+  gcd, lcm, ncr: nCr, npr: nPr
+};
+
+/* ---------- Recursive-descent parser (no eval) ----------
+   expr    = term   (('+' | '-') term)*
+   term    = unary  (('*' | '/' | implicit) unary)*
+   unary   = ('-' | '+') unary | power
+   power   = postfix ('^' unary)?          right-associative
+   postfix = primary ('!' | '%')*
+   primary = number | const | func '(' args ')' | '(' expr ')'
+   Each token is read once, so evaluation is O(length of expression). */
+function evaluate(source) {
+  const tokens = source.toLowerCase()
+    .replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-')
+    .replace(/√/g, 'sqrt').replace(/π/g, 'pi')
+    .match(/\d+\.?\d*|\.\d+|[a-z]+|[-+*\/^()!%,]|\S/g) || [];
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const next = () => tokens[pos++];
+  const startsOperand = t => t !== undefined && (/^[\d.a-z]/.test(t) || t === '(');
+
+  function expr() {
+    let v = term();
+    while (peek() === '+' || peek() === '-') v = next() === '+' ? v + term() : v - term();
+    return v;
+  }
+
+  function term() {
+    let v = unary();
+    for (;;) {
+      const t = peek();
+      if (t === '*') { next(); v *= unary(); }
+      else if (t === '/') {
+        next();
+        const d = unary();
+        if (d === 0) throw new Error('Cannot divide by zero');
+        v /= d;
+      }
+      else if (startsOperand(t)) v *= unary();   // 2π, 3(4+1), 2sin(30)
+      else return v;
+    }
+  }
+
+  function unary() {
+    if (peek() === '-') { next(); return -unary(); }
+    if (peek() === '+') { next(); return unary(); }
+    return power();
+  }
+
+  function power() {
+    const base = postfix();
+    if (peek() === '^') { next(); return Math.pow(base, unary()); }
+    return base;
+  }
+
+  function postfix() {
+    let v = primary();
+    while (peek() === '!' || peek() === '%') v = next() === '!' ? factorial(v) : v / 100;
+    return v;
+  }
+
+  function primary() {
+    const t = next();
+    if (t === undefined) throw new Error('Expression is incomplete');
+    if (/^[\d.]/.test(t)) return parseFloat(t);
+    if (t === '(') {
+      const v = expr();
+      if (next() !== ')') throw new Error('Missing )');
+      return v;
+    }
+    if (t === 'pi') return Math.PI;
+    if (t === 'e') return Math.E;
+    if (t === 'ans') return ans;
+    if (FUNCS[t]) {
+      if (next() !== '(') throw new Error(`Write ${t}( … )`);
+      const args = [];
+      if (peek() !== ')') {
+        do args.push(expr()); while (peek() === ',' && next());
+      }
+      if (next() !== ')') throw new Error('Missing )');
+      if (args.length !== FUNCS[t].length) throw new Error(`${t} needs ${FUNCS[t].length} value(s)`);
+      return FUNCS[t](...args);
+    }
+    throw new Error(`Unexpected "${t}"`);
+  }
+
+  if (!tokens.length) return null;
+  const value = expr();
+  if (pos < tokens.length) throw new Error(`Unexpected "${tokens[pos]}"`);
+  if (!Number.isFinite(value)) throw new Error('Math error');
+  // 12 significant digits hides float noise such as sin(180°) = 1.2e-16
+  return Number(value.toPrecision(12));
+}
+
+/* ---------- UI ---------- */
+const input = document.getElementById('input');
+const resultEl = document.getElementById('result');
+const modeBtn = document.getElementById('mode');
+const ansTag = document.getElementById('ansTag');
+const historyEl = document.getElementById('history');
+
+const LAYOUT = [
+  ['sin', 'sin(', ''], ['cos', 'cos(', ''], ['tan', 'tan(', ''], ['log', 'log(', ''], ['ln', 'ln(', ''], ['AC', 'AC', ''],
+  ['sin⁻¹', 'asin(', ''], ['cos⁻¹', 'acos(', ''], ['tan⁻¹', 'atan(', ''], ['√', 'sqrt(', ''], ['xʸ', '^', ''], ['⌫', 'DEL', ''],
+  ['n!', '!', ''], ['|x|', 'abs(', ''], ['prime?', 'isprime(', ''], ['(', '(', ''], [')', ')', ''], ['1/x', '1/(', ''],
+  ['π', 'π', ''], ['7', '7', 'num'], ['8', '8', 'num'], ['9', '9', 'num'], ['÷', '÷', 'op'], ['%', '%', ''],
+  ['e', 'e', ''], ['4', '4', 'num'], ['5', '5', 'num'], ['6', '6', 'num'], ['×', '×', 'op'], ['nCr', 'ncr(', ''],
+  ['Ans', 'ans', ''], ['1', '1', 'num'], ['2', '2', 'num'], ['3', '3', 'num'], ['−', '−', 'op'], ['gcd', 'gcd(', ''],
+  ['x²', '^2', ''], ['0', '0', 'num'], ['.', '.', 'num'], [',', ',', ''], ['+', '+', 'op'], ['=', '=', 'eq']
+];
+
+document.getElementById('keys').innerHTML = LAYOUT
+  .map(([label, value, cls]) => `<button class="key ${cls}" data-v="${value}">${label}</button>`)
+  .join('');
+
+function insert(text) {
+  const s = input.selectionStart, e = input.selectionEnd;
+  input.value = input.value.slice(0, s) + text + input.value.slice(e);
+  input.setSelectionRange(s + text.length, s + text.length);
+  input.focus();
+  preview();
+}
+
+function backspace() {
+  const s = input.selectionStart, e = input.selectionEnd;
+  if (s !== e) input.value = input.value.slice(0, s) + input.value.slice(e);
+  else if (s > 0) { input.value = input.value.slice(0, s - 1) + input.value.slice(s); input.setSelectionRange(s - 1, s - 1); }
+  input.focus();
+  preview();
+}
+
+function show(text, cls = '') { resultEl.textContent = text; resultEl.className = cls; }
+
+// Live preview while typing: silent on errors because the expression is usually unfinished.
+function preview() {
+  try {
+    const v = evaluate(input.value);
+    show(v === null ? '' : v, 'preview');
+  } catch { show(''); }
+}
+
+function calculate() {
+  try {
+    const v = evaluate(input.value);
+    if (v === null) return;
+    history.unshift({ expr: input.value, value: v });
+    if (history.length > 5) history.pop();
+    ans = v;
+    ansTag.textContent = `Ans = ${v}`;
+    show(v);
+    input.value = String(v);
+    renderHistory();
+  } catch (err) { show(err.message, 'error'); }
+}
+
+function clearAll() { input.value = ''; show(''); input.focus(); }
+
+function renderHistory() {
+  historyEl.innerHTML = history
+    .map((h, i) => `<button data-i="${i}"><span>${h.expr}</span><span>= ${h.value}</span></button>`)
+    .join('');
+}
+
+document.getElementById('keys').addEventListener('click', e => {
+  const v = e.target.dataset && e.target.dataset.v;
+  if (!v) return;
+  if (v === '=') calculate();
+  else if (v === 'AC') clearAll();
+  else if (v === 'DEL') backspace();
+  else insert(v);
+});
+
+historyEl.addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (btn) { input.value = history[btn.dataset.i].expr; input.focus(); preview(); }
+});
+
+modeBtn.addEventListener('click', () => {
+  degrees = !degrees;
+  modeBtn.textContent = degrees ? 'DEG' : 'RAD';
+  preview();
+});
+
+input.addEventListener('input', preview);
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); calculate(); }
+  if (e.key === 'Escape') clearAll();
+});
+</script>
+</body>
+</html>
